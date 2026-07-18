@@ -1,7 +1,6 @@
 ---
 name: gbro-collage-broll
-description: 将约 5 秒口播文稿、观点句或抽象概念做成高级 editorial halftone paper-collage / 半调纸拼贴 B-roll。用户说“collage b-roll”“纸拼贴 b-roll”“半调拼贴”“拼贴风格配画面”“用这段文稿做拼贴动画”“gbro-collage-broll”，或希望把一句文稿转成拼贴视觉隐喻时，必须使用此 skill。强制采用三阶段审批：先只提视觉隐喻，用户确认后才生成彩色拼贴静帧，静帧再次确认后才默认调用 Gemini Omni Flash 生成首尾帧组装动画。默认视频模型固定为 gemini-omni-flash-preview，不再默认使用 Veo；只有用户明确指定其他模型时才切换。
-compatibility: 在 Codex 环境运行（Gate 2 依赖内置 image_gen）。视频生成脚本已随本 skill 自带（scripts/generate_video.py），另需 Python >= 3.10、google-genai >= 2.10.0、已配置的 GEMINI_API_KEY，以及 ffmpeg / ffprobe。首次使用先按「首次使用：环境自检」完成配置。
+description: 将约 5 秒口播文稿、观点句或抽象概念做成高级 editorial halftone paper-collage / 半调纸拼贴 B-roll。用户说“collage b-roll”“纸拼贴 b-roll”“半调拼贴”“拼贴风格配画面”“用这段文稿做拼贴动画”“gbro-collage-broll”，或希望把一句文稿转成拼贴视觉隐喻时，必须使用此 skill。强制采用三阶段审批：先只提视觉隐喻，用户确认后才生成彩色拼贴静帧，静帧再次确认后才默认通过 Google Vertex Agent Platform 调用 Gemini Omni Flash 生成首尾帧组装动画。默认视频模型固定为 gemini-omni-flash-preview，不再默认使用 Veo；只有用户明确指定其他模型时才切换。
 ---
 
 # gbro Collage B-roll
@@ -28,14 +27,17 @@ bash <本skill目录>/scripts/check_setup.sh
 
 ### 配置指南（按缺失项输出）
 
-1. **GEMINI_API_KEY 未设置**
-   到 [Google AI Studio](https://aistudio.google.com/apikey) 创建 API key，然后写入 shell 配置：
+1. **gcloud / Vertex ADC / project 未配置**
+   安装 [Google Cloud CLI](https://cloud.google.com/sdk/docs/install)，然后配置默认项目与 ADC：
 
    ```bash
-   echo 'export GEMINI_API_KEY="你的key"' >> ~/.zshrc && source ~/.zshrc
+   gcloud auth application-default login
+   echo 'export GOOGLE_CLOUD_PROJECT="你的项目ID"' >> ~/.zshrc
+   echo 'export GOOGLE_CLOUD_LOCATION="global"' >> ~/.zshrc
+   source ~/.zshrc
    ```
 
-   注意：视频生成按量计费，由这个 key 对应的 Google 账号承担。
+   项目需启用结算与 Agent Platform API。视频费用计入该 Google Cloud 项目。
 
 2. **ffmpeg / ffprobe 缺失**
    macOS：`brew install ffmpeg`；Debian/Ubuntu：`sudo apt install ffmpeg`。
@@ -83,13 +85,13 @@ bash <本skill目录>/scripts/check_setup.sh
 
 ### Gate 3：视频生成
 
-静帧确认后，不再询问使用哪个视频模型，直接使用本 skill 自带的 `scripts/generate_video.py`，默认调用：
+静帧确认后，不再询问使用哪个视频模型，直接使用本 skill 自带的 `scripts/generate_video.py`，默认通过 Vertex Agent Platform 调用：
 
 ```text
 gemini-omni-flash-preview
 ```
 
-只有用户明确指定其他视频模型时，才覆盖这个默认值。不要自动调用 Veo，也不要把模型选择再抛给用户。
+只有用户明确指定其他视频模型时，才覆盖这个默认值。不要自动调用 Veo，也不要把模型选择再抛给用户。旧 Gemini Developer API 后端仅作兼容保留；只有用户明确要求时才设置 `OMNI_BACKEND=gemini-api`。
 
 ## 成功标准
 
@@ -306,7 +308,7 @@ No scene cuts, no camera movement, no zoom, no morphing, no new objects, no text
 }
 ```
 
-确认 `GEMINI_API_KEY` 已设置，但不要输出或记录密钥内容。
+确认 `GOOGLE_CLOUD_PROJECT`（或 `OMNI_PROJECT_ID`）已设置、location 为 `global`，且 ADC 凭据文件存在。脚本会在 Gate 3 请求前刷新 access token；不得输出或记录 token。
 
 ### 4. 批量调用 Gemini Omni Flash
 
@@ -334,7 +336,15 @@ No scene cuts, no camera movement, no zoom, no morphing, no new objects, no text
   --concurrency 3
 ```
 
-脚本默认模型即 `gemini-omni-flash-preview`。如果出现 legacy Interactions API schema 错误，说明用错了旧 SDK；切换到共享环境 `~/hyperframes-projects/.omni-venv/bin/python` 后重试，不要退回 Veo。
+脚本默认后端为 `vertex`，调用 `global` 区域的 Agent Platform Interactions API，模型为 `gemini-omni-flash-preview`。本地首尾帧以内联 base64 发送，不要求额外配置 Cloud Storage。不得在日志中输出 ADC token。
+
+只有用户明确要求 Gemini Developer API 兼容后端时，才使用：
+
+```bash
+OMNI_BACKEND=gemini-api GEMINI_API_KEY=... \
+  ~/hyperframes-projects/.omni-venv/bin/python \
+  <本skill目录>/scripts/generate_video.py --batch <project>/omni-jobs.json
+```
 
 ### 5. 强制无声交付
 

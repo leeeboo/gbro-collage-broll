@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Generates and edits videos using the Gemini Omni Flash model via the google-genai Interactions API.
-Can automatically upload local media references using the Files API.
+Generates and edits videos using Gemini Omni Flash through Vertex Agent Platform
+or the Gemini Developer API compatibility backend.
 Supports parallel execution of multiple generations using Python standard library.
-Uses the official google-genai SDK.
+The Vertex backend uses the Interactions REST API; the compatibility backend uses
+the official google-genai SDK.
 """
 
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import mimetypes
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -27,6 +31,130 @@ def get_api_key(args):
     if args.api_key:
         return args.api_key
     return os.environ.get("GEMINI_API_KEY")
+
+def get_vertex_project(args):
+    """Returns the Vertex project without invoking network APIs."""
+    return args.project or os.environ.get("OMNI_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+
+def get_vertex_token():
+    """Gets an ADC access token without printing it."""
+    try:
+        result = subprocess.run(
+            ["gcloud", "auth", "application-default", "print-access-token"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) and e.stderr else str(e)
+        raise RuntimeError(f"Vertex ADC authentication failed: {detail}")
+    token = result.stdout.strip()
+    if not token:
+        raise RuntimeError("Vertex ADC authentication returned an empty access token.")
+    return token
+
+def vertex_media_part(path, media_type, default_mime):
+    """Builds a Vertex Interactions media part from a URI or local file."""
+    if path.startswith(("gs://", "https://", "http://")):
+        return {"type": media_type, "uri": path, "mime_type": default_mime}
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Asset path '{path}' does not exist.")
+    mime_type = mimetypes.guess_type(path)[0] or default_mime
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode("ascii")
+    return {"type": media_type, "data": data, "mime_type": mime_type}
+
+def build_vertex_request(prompt, model, aspect_ratio, duration, image_path=None, video_path=None, previous_interaction_id=None):
+    """Builds the documented Vertex Agent Platform Interactions request."""
+    input_parts = [{"type": "text", "text": prompt}]
+    for path in image_path or []:
+        input_parts.append(vertex_media_part(path, "image", "image/png"))
+    for path in video_path or []:
+        input_parts.append(vertex_media_part(path, "video", "video/mp4"))
+
+    video_format = {
+        "type": "video",
+        "aspect_ratio": aspect_ratio,
+    }
+    if duration:
+        video_format["duration"] = duration
+
+    body = {
+        "model": model,
+        "input": input_parts,
+        "response_format": [video_format],
+        "generation_config": {
+            "video_config": {
+                "task": "reference_to_video" if len(input_parts) > 1 else "text_to_video"
+            }
+        },
+    }
+    if previous_interaction_id:
+        body["previous_interaction_id"] = previous_interaction_id
+    return body
+
+def save_vertex_video(response, output_path, token):
+    """Saves inline, HTTPS, or Cloud Storage video output from an interaction."""
+    video = next(
+        (
+            content
+            for step in response.get("steps", [])
+            for content in step.get("content", [])
+            if content.get("type") == "video"
+        ),
+        None,
+    )
+    if not video:
+        raise RuntimeError(f"No video content found in Vertex response: {response}")
+
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    if video.get("data"):
+        with open(output_path, "wb") as f:
+            f.write(base64.b64decode(video["data"]))
+    elif str(video.get("uri", "")).startswith("gs://"):
+        subprocess.run(["gcloud", "storage", "cp", video["uri"], output_path], check=True)
+    elif video.get("uri"):
+        req = urllib.request.Request(video["uri"], headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=480) as resp, open(output_path, "wb") as f:
+            while chunk := resp.read(8192):
+                f.write(chunk)
+    else:
+        raise RuntimeError(f"Vertex video output has neither data nor URI: {video}")
+    print(f"Video successfully saved to: {output_path}")
+
+def generate_vertex_video(prompt, project, location, model, aspect_ratio, duration, image_path, video_path, output_path, previous_interaction_id):
+    """Calls Gemini Omni Flash on Vertex Agent Platform using ADC."""
+    if not project:
+        raise RuntimeError("Vertex project is missing. Set GOOGLE_CLOUD_PROJECT or OMNI_PROJECT_ID.")
+    token = get_vertex_token()
+    body = build_vertex_request(
+        prompt,
+        model,
+        aspect_ratio,
+        duration,
+        image_path=image_path if isinstance(image_path, list) else ([image_path] if image_path else []),
+        video_path=video_path if isinstance(video_path, list) else ([video_path] if video_path else []),
+        previous_interaction_id=previous_interaction_id,
+    )
+    endpoint = f"https://aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/interactions"
+    print(f"\nSending generation request to Vertex Agent Platform model '{model}'...")
+    print(f"Project: {project} | Location: {location} | Aspect Ratio: {aspect_ratio} | Duration: {duration}")
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=720) as resp:
+            response = json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Vertex interaction failed: {e.code} - {e.read().decode('utf-8', errors='replace')}")
+    print(f"Interaction ID: {response.get('id', 'unknown')}")
+    save_vertex_video(response, output_path, token)
 
 def is_file_uri(uri):
     """Returns True if the string is a standard Gemini File URI."""
@@ -180,9 +308,16 @@ def download_video_file(file_uri, output_path, api_key):
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Error downloading video file: {e.code} - {e.read().decode()}")
 
-def generate_video(prompt, api_key, model="gemini-omni-flash-preview", aspect_ratio="16:9", duration=None, image_path=None, video_path=None, output_path="output.mp4", strip_audio=False, previous_interaction_id=None):
+def generate_video(prompt, api_key=None, backend="vertex", project=None, location="global", model="gemini-omni-flash-preview", aspect_ratio="16:9", duration=None, image_path=None, video_path=None, output_path="output.mp4", strip_audio=False, previous_interaction_id=None):
     """Creates an interaction with the video model and downloads the resulting video using the official google-genai SDK."""
     duration = parse_and_validate_duration(duration)
+    if backend == "vertex":
+        return generate_vertex_video(
+            prompt, project, location, model, aspect_ratio, duration,
+            image_path, video_path, output_path, previous_interaction_id,
+        )
+    if not api_key:
+        raise RuntimeError("Gemini API backend requires GEMINI_API_KEY or --api-key.")
     input_parts = []
 
     # 1. Resolve and add image inputs (reference/start/end frames)
@@ -273,7 +408,7 @@ def generate_video(prompt, api_key, model="gemini-omni-flash-preview", aspect_ra
     # Download the final video
     download_video_file(video_uri, output_path, api_key)
 
-def run_job(job, api_key):
+def run_job(job, api_key, backend, project, location):
     """Runs a single generation job inside a thread pool, catching exceptions."""
     prompt = job.get("prompt")
     if not prompt:
@@ -288,6 +423,9 @@ def run_job(job, api_key):
     model = job.get("model", "gemini-omni-flash-preview")
     strip_audio = job.get("strip_audio", False)
     previous_interaction_id = job.get("previous_interaction_id")
+    job_backend = job.get("backend", backend)
+    job_project = job.get("project", project)
+    job_location = job.get("location", location)
 
     if not output_path:
         output_path = f"media/output_{slugify(prompt)}.mp4"
@@ -298,6 +436,9 @@ def run_job(job, api_key):
         generate_video(
             prompt=prompt,
             api_key=api_key,
+            backend=job_backend,
+            project=job_project,
+            location=job_location,
             model=model,
             aspect_ratio=aspect_ratio,
             duration=duration,
@@ -313,7 +454,7 @@ def run_job(job, api_key):
         return {"job": job, "status": "FAILED", "error": str(e)}
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate and edit videos using Gemini Omni Flash model via google-genai SDK (supports parallel batch execution).")
+    parser = argparse.ArgumentParser(description="Generate and edit videos using Gemini Omni Flash through Vertex Agent Platform or the Gemini API compatibility backend.")
     parser.add_argument("prompt", nargs="?", help="Text prompt / instruction for a single video generation")
     parser.add_argument("--image", action="append", help="Optional local image path or File API URI for referencing / image-to-video (can be specified multiple times)")
     parser.add_argument("--video", action="append", help="Optional local video path or File API URI for editing / extending (can be specified multiple times)")
@@ -323,6 +464,9 @@ def main():
     parser.add_argument("--output", help="Local output file path for single generation (default: media/output.mp4)")
     parser.add_argument("--strip-audio", "-a", action="store_true", help="Completely strip/disable audio stream from the input video(s) before uploading so Gemini Omni Flash can regenerate new audio from scratch")
     parser.add_argument("--previous-interaction-id", help="Optional Interaction ID of a previous generation for turn-by-turn editing")
+    parser.add_argument("--backend", choices=["vertex", "gemini-api"], default=os.environ.get("OMNI_BACKEND", "vertex"), help="Video API backend (default: vertex)")
+    parser.add_argument("--project", help="Vertex project ID (default: OMNI_PROJECT_ID or GOOGLE_CLOUD_PROJECT)")
+    parser.add_argument("--location", default=os.environ.get("OMNI_LOCATION", os.environ.get("GOOGLE_CLOUD_LOCATION", "global")), help="Vertex location (default: global)")
     parser.add_argument("--api-key", help="Gemini API Key (overrides env)")
     
     # Parallel batch configuration options
@@ -333,7 +477,11 @@ def main():
     args = parser.parse_args()
 
     api_key = get_api_key(args)
-    if not api_key:
+    project = get_vertex_project(args)
+    if args.backend == "vertex" and not project:
+        print("Error: Vertex project is not set. Use --project or set GOOGLE_CLOUD_PROJECT.", file=sys.stderr)
+        sys.exit(1)
+    if args.backend == "gemini-api" and not api_key:
         print("Error: API key is not set. Use --api-key or set GEMINI_API_KEY environment variable.", file=sys.stderr)
         sys.exit(1)
 
@@ -373,7 +521,10 @@ def main():
                         "video": args.video,
                         "model": args.model,
                         "strip_audio": args.strip_audio,
-                        "previous_interaction_id": args.previous_interaction_id
+                        "previous_interaction_id": args.previous_interaction_id,
+                        "backend": args.backend,
+                        "project": project,
+                        "location": args.location,
                     })
         print(f"Loaded {len(jobs)} prompts from text file. Running with concurrency={args.concurrency}...")
 
@@ -388,6 +539,9 @@ def main():
             generate_video(
                 prompt=args.prompt,
                 api_key=api_key,
+                backend=args.backend,
+                project=project,
+                location=args.location,
                 model=args.model,
                 aspect_ratio=args.aspect_ratio,
                 duration=args.duration,
@@ -409,7 +563,7 @@ def main():
 
     results = []
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        futures = {executor.submit(run_job, job, api_key): job for job in jobs}
+        futures = {executor.submit(run_job, job, api_key, args.backend, project, args.location): job for job in jobs}
         for future in as_completed(futures):
             results.append(future.result())
 

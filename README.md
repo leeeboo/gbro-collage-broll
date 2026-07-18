@@ -9,7 +9,7 @@
 
 把一句约 5 秒的口播文稿，压成一个 sharp visual idea，再生成高级编辑风**半调纸拼贴（halftone paper-collage）组装动画** B-roll。
 
-Turn a ~5s voiceover line into a premium editorial paper-collage assemble-from-empty B-roll clip, powered by Gemini Omni Flash first/last-frame video generation.
+Turn a ~5s voiceover line into a premium editorial paper-collage assemble-from-empty B-roll clip, powered by Gemini Omni Flash on Vertex Agent Platform.
 
 ## 效果
 
@@ -34,12 +34,14 @@ Turn a ~5s voiceover line into a premium editorial paper-collage assemble-from-e
 | 依赖 | 说明 |
 |------|------|
 | Codex 环境 | Gate 2 静帧生成依赖内置 `image_gen` 工具 |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) 创建，视频生成按量计费 |
+| Google Cloud ADC | 运行 `gcloud auth application-default login` |
+| `GOOGLE_CLOUD_PROJECT` | 启用结算与 Agent Platform API 的 Google Cloud 项目 |
+| `GOOGLE_CLOUD_LOCATION` | 固定为 `global` |
 | Python >= 3.10 | 用于视频生成脚本 |
 | `google-genai >= 2.10.0` | skill 会引导创建共享 venv `~/hyperframes-projects/.omni-venv/` |
 | ffmpeg / ffprobe | 首尾帧处理、去音轨、contact sheet |
 
-视频生成脚本（`scripts/generate_video.py` + `scripts/upload_file.py`）已随 skill 自带，无需额外安装其他 skill。
+视频生成默认走 Vertex Agent Platform；`scripts/upload_file.py` 仅供旧 Gemini API 兼容后端使用。
 
 ## 安装
 
@@ -70,8 +72,9 @@ gbro-collage-broll/
 ├── evals/evals.json                # 四条闸门行为评测
 └── scripts/
     ├── check_setup.sh              # 首次使用环境自检
-    ├── generate_video.py           # Gemini Omni Flash 批量视频生成
-    ├── upload_file.py              # Files API 上传辅助
+    ├── generate_video.py           # Vertex / Gemini API 双后端批量视频生成
+    ├── test_generate_video.py      # Vertex 请求与响应离线自检
+    ├── upload_file.py              # 旧 Gemini Files API 兼容辅助
     └── generate_veo_first_last.py  # 旧 Veo 链路（仅兼容保留，默认不用）
 ```
 

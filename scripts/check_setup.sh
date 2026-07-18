@@ -5,16 +5,40 @@
 set -u
 
 VENV_PY="$HOME/hyperframes-projects/.omni-venv/bin/python"
+BACKEND="${OMNI_BACKEND:-vertex}"
+ADC_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/gcloud/application_default_credentials.json}"
 FAIL=0
 
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; FAIL=1; }
 
-# 1. GEMINI_API_KEY
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  ok "GEMINI_API_KEY 已设置"
+# 1. Video backend auth
+if [ "$BACKEND" = "vertex" ]; then
+  PROJECT_ID="${OMNI_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-}}"
+  if command -v gcloud >/dev/null 2>&1; then
+    ok "gcloud CLI 可用"
+  else
+    bad "gcloud CLI 缺失（安装：https://cloud.google.com/sdk/docs/install）"
+  fi
+  if [ -n "$PROJECT_ID" ]; then
+    ok "Vertex project 已设置（${PROJECT_ID}）"
+  else
+    bad "Vertex project 未设置（export GOOGLE_CLOUD_PROJECT=你的项目ID）"
+  fi
+  if [ -r "$ADC_FILE" ]; then
+    ok "Vertex ADC 凭据已配置"
+  else
+    bad "Vertex ADC 凭据缺失（运行：gcloud auth application-default login）"
+  fi
+  if [ "${OMNI_LOCATION:-${GOOGLE_CLOUD_LOCATION:-global}}" = "global" ]; then
+    ok "Vertex location=global"
+  else
+    bad "Gemini Omni Flash 当前要求 location=global"
+  fi
+elif [ -n "${GEMINI_API_KEY:-}" ]; then
+  ok "Gemini API 兼容后端：GEMINI_API_KEY 已设置"
 else
-  bad "GEMINI_API_KEY 未设置（到 https://aistudio.google.com/apikey 创建后 export 到 shell 配置）"
+  bad "Gemini API 兼容后端缺少 GEMINI_API_KEY"
 fi
 
 # 2. ffmpeg / ffprobe
