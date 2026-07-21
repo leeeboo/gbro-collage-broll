@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gbro-collage-broll environment self-check.
+# gbro-collage-broll Vertex environment self-check.
 # Exit 0 = all good; exit 1 = at least one item missing (details on stdout).
 
 set -u
@@ -7,12 +7,25 @@ set -u
 VENV_PY="$HOME/hyperframes-projects/.omni-venv/bin/python"
 BACKEND="${OMNI_BACKEND:-vertex}"
 ADC_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-$HOME/.config/gcloud/application_default_credentials.json}"
+MODE="${1:---video}"
 FAIL=0
 
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; FAIL=1; }
 
-# 1. Video backend auth
+case "$MODE" in
+  --image-fallback|--video) ;;
+  *)
+    printf 'Usage: %s [--image-fallback|--video]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$MODE" = "--image-fallback" ]; then
+  BACKEND="vertex"
+fi
+
+# 1. Vertex auth shared by image fallback and video generation
 if [ "$BACKEND" = "vertex" ]; then
   PROJECT_ID="${OMNI_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-}}"
   if command -v gcloud >/dev/null 2>&1; then
@@ -30,6 +43,11 @@ if [ "$BACKEND" = "vertex" ]; then
   else
     bad "Vertex ADC 凭据缺失（运行：gcloud auth application-default login）"
   fi
+  if command -v gcloud >/dev/null 2>&1 && gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    ok "Vertex ADC 凭据可刷新"
+  else
+    bad "Vertex ADC 凭据无法刷新（运行：gcloud auth application-default login）"
+  fi
   if [ "${OMNI_LOCATION:-${GOOGLE_CLOUD_LOCATION:-global}}" = "global" ]; then
     ok "Vertex location=global"
   else
@@ -41,11 +59,13 @@ else
   bad "Gemini API 兼容后端缺少 GEMINI_API_KEY"
 fi
 
-# 2. ffmpeg / ffprobe
-if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-  ok "ffmpeg / ffprobe 可用"
-else
-  bad "ffmpeg / ffprobe 缺失（macOS: brew install ffmpeg；Debian/Ubuntu: sudo apt install ffmpeg）"
+# 2. ffmpeg / ffprobe are only required by the video stage
+if [ "$MODE" = "--video" ]; then
+  if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+    ok "ffmpeg / ffprobe 可用"
+  else
+    bad "ffmpeg / ffprobe 缺失（macOS: brew install ffmpeg；Debian/Ubuntu: sudo apt install ffmpeg）"
+  fi
 fi
 
 # 3. Python >= 3.10

@@ -29,11 +29,11 @@ Turn a ~5s voiceover line into a premium editorial paper-collage assemble-from-e
 
 ## 环境要求
 
-首次触发时 skill 会自动运行 `scripts/check_setup.sh` 自检，并针对缺失项给出配置指引。需要：
+Skill 会按阶段自检，并针对缺失项给出配置指引：Gate 2 仅在内置 `image_gen` 无法调用时检查 Vertex 图片回退；Gate 3 每次生成视频前检查 Vertex 视频环境。需要：
 
 | 依赖 | 说明 |
 |------|------|
-| Codex 环境 | Gate 2 静帧生成依赖内置 `image_gen` 工具 |
+| 图片生成 | 优先使用 Codex `image_gen`；不可用时回退到 Vertex `gemini-3-pro-image` |
 | Google Cloud ADC | 运行 `gcloud auth application-default login` |
 | `GOOGLE_CLOUD_PROJECT` | 启用结算与 Agent Platform API 的 Google Cloud 项目 |
 | `GOOGLE_CLOUD_LOCATION` | 固定为 `global` |
@@ -71,7 +71,9 @@ gbro-collage-broll/
 ├── agents/openai.yaml              # Codex interface 配置
 ├── evals/evals.json                # 四条闸门行为评测
 └── scripts/
-    ├── check_setup.sh              # 首次使用环境自检
+    ├── check_setup.sh              # Gate 2/3 分阶段环境自检
+    ├── generate_image.py           # Vertex 图片生成回退
+    ├── test_generate_image.py      # 图片回退离线自检
     ├── generate_video.py           # Vertex / Gemini API 双后端批量视频生成
     ├── test_generate_video.py      # Vertex 请求与响应离线自检
     ├── upload_file.py              # 旧 Gemini Files API 兼容辅助

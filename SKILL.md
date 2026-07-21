@@ -15,19 +15,18 @@ description: 将约 5 秒口播文稿、观点句或抽象概念做成高级 edi
 
 这两个确认闸门是工作流的一部分。它们让用户把注意力放在审美和方向上，同时避免错误隐喻或错误静帧直接消耗视频生成成本。
 
-## 首次使用：环境自检
+## 分阶段环境自检
 
-每次触发本 skill 时，进入 Gate 1 之前先运行自检脚本：
+Gate 1 不需要外部运行环境，直接进行。不要因为 Vertex AI 尚未配置而阻止用户确认视觉隐喻。
 
-```bash
-bash <本skill目录>/scripts/check_setup.sh
-```
+- Gate 2：优先调用 Codex 内置 `image_gen`。只有该工具不存在或无法调用时，才检查 Vertex 图片回退环境。
+- Gate 3：每次生成视频前都检查 Vertex 视频环境，不能仅凭之前成功过就跳过。
 
-全部通过则直接开始 Gate 1，不要向用户重复配置信息。任何一项失败时，视为首次使用：不进入 Gate 1，先向用户输出下面的配置指南（只列出缺失项），等用户确认配置完成后重新自检。
+任何检查失败时暂停当前 Gate，按脚本输出只列出缺失项和对应配置方法；用户确认后重新检查。
 
 ### 配置指南（按缺失项输出）
 
-1. **gcloud / Vertex ADC / project 未配置**
+1. **gcloud / Vertex ADC / project 未配置或凭据无法刷新**
    安装 [Google Cloud CLI](https://cloud.google.com/sdk/docs/install)，然后配置默认项目与 ADC：
 
    ```bash
@@ -35,6 +34,7 @@ bash <本skill目录>/scripts/check_setup.sh
    echo 'export GOOGLE_CLOUD_PROJECT="你的项目ID"' >> ~/.zshrc
    echo 'export GOOGLE_CLOUD_LOCATION="global"' >> ~/.zshrc
    source ~/.zshrc
+   gcloud services enable aiplatform.googleapis.com --project="$GOOGLE_CLOUD_PROJECT"
    ```
 
    项目需启用结算与 Agent Platform API。视频费用计入该 Google Cloud 项目。
@@ -54,7 +54,7 @@ bash <本skill目录>/scripts/check_setup.sh
    ```
 
 5. **不在 Codex 环境 / 没有内置 image_gen**
-   Gate 2 的静帧生成依赖 Codex 内置 `image_gen` 工具。在其他 agent 环境下运行时，向用户说明需要自行提供等效的图片生成方式（或手动提供静帧图片后从 Gate 2 确认继续）。
+   若 Vertex AI 已配置，Gate 2 自动改用 Vertex AI 的 `gemini-3-pro-image`，不要求用户手动提供静帧。
 
 ## 强制审批协议
 
@@ -79,6 +79,14 @@ bash <本skill目录>/scripts/check_setup.sh
 
 隐喻确认后，才写 visual spec 和 imagegen prompt，并用 Codex `imagegen` 生成最终静帧。
 
+如果 `image_gen` 工具不存在或无法调用，运行：
+
+```bash
+bash <本skill目录>/scripts/check_setup.sh --image-fallback
+```
+
+检查通过后，用 `<本skill目录>/scripts/generate_image.py` 调用 Vertex AI `gemini-3-pro-image` 生成静帧。检查失败则暂停 Gate 2，输出缺失的 Vertex 配置方法。不要静默切换到其他图片模型。
+
 把原图保存到项目目录，生成带编号的静帧 contact sheet，向用户展示并再次停下。此阶段仍然不调用 Omni Flash，也不生成视频。
 
 如果用户只确认部分静帧，只让通过的条目进入 Gate 3；需要修改的静帧先重生并重新确认。
@@ -90,6 +98,8 @@ bash <本skill目录>/scripts/check_setup.sh
 ```text
 gemini-omni-flash-preview
 ```
+
+调用前必须运行 `bash <本skill目录>/scripts/check_setup.sh --video`。只有全部通过才生成视频；否则暂停 Gate 3，按“配置指南”给出缺失项、项目配置和 ADC 登录方法，等用户配置完成后重新检查。
 
 只有用户明确指定其他视频模型时，才覆盖这个默认值。不要自动调用 Veo，也不要把模型选择再抛给用户。旧 Gemini Developer API 后端仅作兼容保留；只有用户明确要求时才设置 `OMNI_BACKEND=gemini-api`。
 
@@ -225,7 +235,7 @@ gemini-omni-flash-preview
 
 ### Imagegen prompt 模板
 
-使用 Codex 内置 `image_gen` 工具（如有本地 `imagegen` skill 则一并遵守）：
+优先使用 Codex 内置 `image_gen` 工具（如有本地 `imagegen` skill 则一并遵守）：
 
 ```text
 Use case: ads-marketing
@@ -238,6 +248,19 @@ Materials/textures: visible printed halftone dots, crisp machine-cut edges, thin
 Constraints: [本条隐喻必须一眼看懂的关系].
 Avoid: no typography, no readable letters, no numerals, no logos, no watermark, no UI, no subtitles, no glossy 3D, no photoreal environment, no clutter.
 ```
+
+若 `image_gen` 不可用，先执行 Vertex 回退自检，再调用固定图片模型：
+
+```bash
+bash <本skill目录>/scripts/check_setup.sh --image-fallback
+~/hyperframes-projects/.omni-venv/bin/python \
+  <本skill目录>/scripts/generate_image.py \
+  --prompt "<完整 imagegen prompt>" \
+  --aspect-ratio "<visual-spec 中的比例>" \
+  --output <item>/frames/last-frame-original.png
+```
+
+回退模型固定为 `gemini-3-pro-image`。只有用户明确要求其他图片模型时才使用 `--model` 覆盖。
 
 ### 静帧 QA
 
@@ -296,6 +319,14 @@ No scene cuts, no camera movement, no zoom, no morphing, no new objects, no text
 每条 prompt 都要明确 Image 1 是空首帧、Image 2 是确认过的完成帧。最终构图必须贴近 Image 2，不让模型自由改造尾帧。
 
 ### 3. 检查 Omni 运行环境
+
+先运行：
+
+```bash
+bash <本skill目录>/scripts/check_setup.sh --video
+```
+
+失败时不要发起视频请求；根据失败项展示前文配置指南并等待用户完成配置。
 
 使用实际运行脚本的 Python 解释器检查 `google-genai` 版本。需要 `>= 2.10.0`。
 
